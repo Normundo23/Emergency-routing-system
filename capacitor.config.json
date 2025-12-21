@@ -1,0 +1,19 @@
+{
+    "appId": "com.cortex.emergency",
+    "appName": "Cortex Emergency",
+    "webDir": "docs",
+    "server": {
+        "androidScheme": "https",
+        "cleartext": true,
+        "allowNavigation": [
+            "localhost",
+            "10.0.2.2",
+            "192.168.*"
+        ]
+    },
+    "plugins": {
+        "SplashScreen": {
+            "launchShowDuration": 0
+        }
+    }
+}

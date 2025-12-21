@@ -1,0 +1,16 @@
+{
+  "name": "cortex-emergency-routing",
+  "version": "1.0.0",
+  "description": "Emergency Routing System Mobile App",
+  "scripts": {
+    "build": "echo 'No build step for static files'",
+    "sync": "cap sync"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/cli": "^6.0.0"
+  },
+  "author": "Cortex",
+  "license": "ISC"
+}
