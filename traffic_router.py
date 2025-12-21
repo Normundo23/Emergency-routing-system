@@ -579,17 +579,9 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
         except Exception as e:
             print(f"Failed to load cache on startup: {e}", flush=True)
 
-    static_dir = Path(__file__).parent / "docs"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
     loaded_bbox: Optional[Tuple[float, float, float, float]] = None
 
-    @app.get("/")
-    def index() -> Any:
-        index_path = static_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(index_path)
-        return {"status": "ok", "message": "Routing API. POST /route or /route/coords"}
+
 
     @app.post("/route")
     def route(req: RouteRequest) -> Dict[str, Any]:
@@ -972,6 +964,10 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
         return {"status": "ok", "nodes": len(new_graph.coordinates), "bbox": {"north": n, "south": s, "east": e, "west": w}, "source": source}
 
 
+    # Mount static files at root (Last to allow API routes to take precedence)
+    static_dir = Path(__file__).parent / "docs"
+    if static_dir.exists():
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
     return app
 

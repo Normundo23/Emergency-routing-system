@@ -10,7 +10,7 @@
   <title>Cortex Emergency Routing</title>
   <!-- TomTom Maps SDK CSS -->
   <link rel="stylesheet" type="text/css" href="https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps.css" />
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
@@ -230,7 +230,7 @@
 
     // Load app.js with timestamp to prevent caching
     const script = document.createElement('script');
-    script.src = `/static/app.js?v=13&t=${Date.now()}`;
+    script.src = `app.js?v=13&t=${Date.now()}`;
     document.body.appendChild(script);
   </script>
 </body>
