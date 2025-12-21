@@ -5,6 +5,13 @@ let tomtomKey = null;
 let startMarker = null;
 let goalMarker = null;
 
+// API Configuration
+// When on GitHub Pages, we need to point to the local Python server
+// If served from localhost:8000, we can use relative paths, but absolute is safer for hybrid setup
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? ''
+    : 'http://localhost:8000';
+
 // GeoJSON Sources IDs
 const SRC_AI_ROUTE = 'cortex-route';
 const SRC_STD_ROUTE = 'std-route';
@@ -34,7 +41,7 @@ const demandRegions = [
 // Init
 (async function init() {
     try {
-        const cfgRes = await fetch('/config');
+        const cfgRes = await fetch(`${API_BASE}/config`);
         const cfg = await cfgRes.json();
 
         if (cfg.tomtom_key) {
@@ -50,7 +57,7 @@ const demandRegions = [
     // Warm up backend
     // Warm up backend with valid bbox
     try {
-        fetch('/graph/load_bbox', {
+        fetch(`${API_BASE}/graph/load_bbox`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ north: 14.5, south: 14.3, east: 121.1, west: 121.0 })
@@ -230,7 +237,7 @@ document.getElementById('calc-route').onclick = async () => {
     const goal = goalMarker.getLngLat();
 
     try {
-        const cortexRes = await fetch('/route/coords', {
+        const cortexRes = await fetch(`${API_BASE}/route/coords`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -373,7 +380,7 @@ document.getElementById('toggle-traffic').onclick = () => {
 
 async function checkIncidents() {
     try {
-        const res = await fetch('/incidents');
+        const res = await fetch(`${API_BASE}/incidents`);
         const data = await res.json();
         if (data.status === 'ok' && data.incidents && data.incidents.length > 0) {
             const topInc = data.incidents[0]; // Get first one logic
@@ -412,7 +419,7 @@ document.getElementById('toggle-demand').onclick = async () => {
 
     setStatus("Fetching demand predictions...");
     try {
-        const res = await fetch('/predict/demand');
+        const res = await fetch(`${API_BASE}/predict/demand`);
         const data = await res.json();
 
         if (data.status === 'ok') {

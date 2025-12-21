@@ -171,48 +171,10 @@ def astar(
 
 
 
-# --- Quick demo scaffold below -------------------------------------------------
-def build_sample_graph() -> Graph:
-    """
-    Small synthetic graph with coordinates; replace with your city graph ingest.
-    """
-    g = Graph()
-    coords = {
-        "A": (14.4090, 121.0420),
-        "B": (14.4100, 121.0440),
-        "C": (14.4115, 121.0465),
-        "D": (14.4125, 121.0415),
-        "E": (14.4140, 121.0450),
-    }
-    g.coordinates = coords
-    g.add_edge("A", "B", length_m=400, typical_speed_mps=15, turn_penalty_s=2)
-    g.add_edge("B", "C", length_m=300, typical_speed_mps=12, turn_penalty_s=2)
-    g.add_edge("C", "E", length_m=350, typical_speed_mps=15, turn_penalty_s=2)
-    g.add_edge("A", "D", length_m=500, typical_speed_mps=18, turn_penalty_s=3)
-    g.add_edge("D", "E", length_m=450, typical_speed_mps=12, turn_penalty_s=3)
-    g.add_edge("B", "D", length_m=250, typical_speed_mps=10, turn_penalty_s=4)
-    g.add_edge("C", "D", length_m=200, typical_speed_mps=9, turn_penalty_s=4)
-    return g
 
 
-def simulate_live_feed(tick: int) -> Tuple[Dict[Tuple[str, str], float], Set[Tuple[str, str]]]:
-    """
-    Fake live feed: occasionally slow or block edges.
-    """
-    live_speeds: Dict[Tuple[str, str], float] = {}
-    blocks: Set[Tuple[str, str]] = set()
 
-    # Random slowdown on B->C
-    if tick % 3 == 0:
-        live_speeds[("B", "C")] = 5.0  # heavy traffic
 
-    # Occasional blockage on C->E
-    if tick % 5 == 0:
-        blocks.add(("C", "E"))
-
-    # Slight speedup on D->E
-    live_speeds[("D", "E")] = 14.0
-    return live_speeds, blocks
 
 
 # --- OSM import utility -------------------------------------------------------
@@ -323,39 +285,7 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
 CACHE_DIR = Path("graph_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-def build_sample_graph() -> Graph:
-    """Create a synthetic grid graph for demo/fallback purposes."""
-    g = Graph()
-    g.source = "grid"
-    rows, cols = 5, 5
-    lat_start, lon_start = 14.4000, 121.0300
-    lat_step, lon_step = 0.005, 0.005 # ~500m blocks
-    
-    # Create nodes
-    for r in range(rows):
-        for c in range(cols):
-            node_id = f"{r}-{c}"
-            lat = lat_start + r * lat_step
-            lon = lon_start + c * lon_step
-            g.coordinates[node_id] = (lat, lon)
-            
-    # Create edges (Grid)
-    for r in range(rows):
-        for c in range(cols):
-            u = f"{r}-{c}"
-            # East neighbor
-            if c < cols - 1:
-                v = f"{r}-{c+1}"
-                dist = 500.0
-                g.add_edge(u, v, dist, 11.1)
-                g.add_edge(v, u, dist, 11.1)
-            # South neighbor
-            if r < rows - 1:
-                v = f"{r+1}-{c}"
-                dist = 500.0
-                g.add_edge(u, v, dist, 11.1)
-                g.add_edge(v, u, dist, 11.1)
-    return g
+
 
 def download_graph_with_timeout(lat: float, lon: float, radius: int, timeout: int = 30) -> Optional[Graph]:
     """Downloads graph using the existing robust loader."""
@@ -649,7 +579,7 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
         except Exception as e:
             print(f"Failed to load cache on startup: {e}", flush=True)
 
-    static_dir = Path(__file__).parent / "web"
+    static_dir = Path(__file__).parent / "docs"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
     loaded_bbox: Optional[Tuple[float, float, float, float]] = None
@@ -705,7 +635,7 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                  
                  local_graph = download_graph_with_timeout(center_lat, center_lon, radius_m, timeout=60)
                  if local_graph is None:
-                      local_graph = build_sample_graph()
+                      raise ValueError("Could not download map from OSM and no cache available.")
                  
                  # Update global
                  graph = local_graph
@@ -750,32 +680,59 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             
             steps = steps_from_coords(coords_ai) if len(coords_ai) >= 2 else []
             
-            # Simple Traffic
-            import random
+            # Real Traffic Integration
             traffic_edges = []
-            count = 0
-            for u, neighbors in local_graph.adjacency.items():
-                if u not in local_graph.coordinates: continue
-                u_c = local_graph.coordinates[u]
-                for e in neighbors:
-                     if e.target not in local_graph.coordinates: continue
-                     v_c = local_graph.coordinates[e.target]
-                     
-                     status = "free"
-                     if random.random() < 0.1: status = "heavy"
-                     elif random.random() < 0.2: status = "moderate"
-                     
-                     if status != "free" or random.random() < 0.05:
-                         geom = [{"lat":p[0],"lon":p[1]} for p in e.geometry] if e.geometry else []
-                         traffic_edges.append({
-                             "u": {"lat": u_c[0], "lon": u_c[1]},
-                             "v": {"lat": v_c[0], "lon": v_c[1]},
-                             "status": status,
-                             "geometry": geom
-                         })
-                         count += 1
-                     if count > 1500: break
-                if count > 1500: break
+            
+            # Fetch real incidents
+            if fetcher and local_graph:
+                 bounds = compute_graph_bounds(local_graph)
+                 # bounds is (N, S, E, W) -> fetcher needs (min_lat, min_lon, max_lat, max_lon)
+                 # Wait, fetcher needs (min_lat, min_lon, max_lat, max_lon) which is (S, W, N, E)
+                 bbox = (bounds[1], bounds[3], bounds[0], bounds[2])
+                 
+                 incidents = fetcher.fetch_incidents(bbox)
+                 
+                 live_speeds = {}
+                 blocks = set()
+                 
+                 for inc in incidents:
+                      try:
+                           # Find nearest node to incident
+                           n = nearest_node(local_graph, inc['lat'], inc['lon'])
+                           
+                           # Affect outgoing edges
+                           for e in local_graph.neighbors(n):
+                                severity = inc.get('severity', 'Medium')
+                                status = "moderate"
+                                if severity == 'High': status = "heavy"
+                                
+                                coords = [{"lat":p[0],"lon":p[1]} for p in e.geometry] if e.geometry else []
+                                if not coords and n in local_graph.coordinates and e.target in local_graph.coordinates:
+                                     # Fallback geometry
+                                     n_c = local_graph.coordinates[n]
+                                     t_c = local_graph.coordinates[e.target]
+                                     coords = [{"lat": n_c[0], "lon": n_c[1]}, {"lat": t_c[0], "lon": t_c[1]}]
+                                     
+                                traffic_edges.append({
+                                     "u": {"lat": local_graph.coordinates[n][0], "lon": local_graph.coordinates[n][1]},
+                                     "v": {"lat": local_graph.coordinates[e.target][0], "lon": local_graph.coordinates[e.target][1]},
+                                     "status": status,
+                                     "geometry": coords,
+                                     "description": inc.get('description', 'Incident')
+                                })
+                                
+                                # Update router logic
+                                if inc['type'] == 'closure':
+                                     blocks.add((n, e.target))
+                                else:
+                                     # Slow down
+                                     factor = 0.2 if severity == "High" else 0.5
+                                     live_speeds[(n, e.target)] = e.typical_speed_mps * factor
+                      except Exception:
+                           continue
+                           
+                 # Apply to router
+                 loc_router.update_live_feeds(live_speeds, blocks)
             
             return {
                 "status": "ok",
@@ -998,14 +955,17 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
 
         try:
             if ox is None:
-                new_graph = build_sample_graph()
-                source = "sample"
+                raise ImportError("osmnx missing")
+                # new_graph = build_sample_graph()
+                # source = "sample"
             else:
                 new_graph = load_graph_from_osm(north=n, south=s, east=e, west=w)
                 source = "osm"
         except Exception as exc:
-            new_graph = build_sample_graph()
-            source = "sample_fallback"
+            # new_graph = build_sample_graph() # No fallback to fake data
+            # source = "sample_fallback"
+            print(f"Failed to load graph: {exc}")
+            raise exc
         graph = new_graph
         router.graph = new_graph
         loaded_bbox = (n, s, e, w)
@@ -1045,38 +1005,14 @@ def load_graph_cache(filepath: str = GRAPH_CACHE_FILE) -> Optional[Graph]:
     return None
 
 
-def demo_rerouting(iterations: int = 5) -> None:
-    graph = build_sample_graph()
-    router = TrafficRouter(graph)
-    current_route: List[str] = []
-    current_eta: float = math.inf
 
-    for tick in range(iterations):
-        live_speeds, blocks = simulate_live_feed(tick)
-        router.update_live_feeds(live_speeds, blocks)
-        try:
-            eta, path = router.route("A", "E", context={"vehicle_type": "ambulance"})
-        except ValueError:
-            print(f"[t={tick}] No path available")
-            continue
-
-        improved = eta < current_eta * 0.9  # require 10% better to switch
-        if not current_route or improved:
-            current_route = path
-            current_eta = eta
-            print(f"[t={tick}] New route {path} ETA={eta:.1f}s")
-        else:
-            print(f"[t={tick}] Keep route {current_route} ETA={current_eta:.1f}s (candidate {eta:.1f}s)")
-
-        time.sleep(0.1)  # simulate time passing
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Traffic-aware emergency router")
     sub = parser.add_subparsers(dest="command")
 
-    demo_p = sub.add_parser("demo", help="run synthetic reroute demo (default)")
-    demo_p.add_argument("--iterations", type=int, default=5, help="number of ticks to simulate")
+
 
     serve_p = sub.add_parser("serve", help="run FastAPI server with OSM graph")
     serve_p.add_argument("--place", type=str, help="place name for OSM (optional, overrides lat/lon)")
@@ -1092,13 +1028,11 @@ if __name__ == "__main__":
     serve_p.add_argument("--no-cache", action="store_true", help="Duplicate graph download")
 
     args = parser.parse_args()
-    command = args.command or "demo"
+    command = args.command or "serve"
     if not hasattr(args, "iterations"):
         args.iterations = 5
 
-    if command == "demo":
-        demo_rerouting(iterations=args.iterations)
-    elif command == "serve":
+    if command == "serve":
         if FastAPI is None:
             raise ImportError("fastapi and uvicorn are required. Install with `pip install fastapi uvicorn`.")
         
@@ -1106,7 +1040,14 @@ if __name__ == "__main__":
         print("Maps will be downloaded automatically when you request a route.")
         
         # Start with minimal sample graph (will be replaced on-demand)
-        graph = build_sample_graph()
+        if os.path.exists("graph_cache/graph.pkl"):
+             print("Loading default graph from cache...")
+             try:
+                 graph = joblib.load("graph_cache/graph.pkl")
+             except:
+                 graph = Graph() # Start empty, load on demand
+        else:
+             graph = Graph()
         
         app = build_app(graph)
         try:
