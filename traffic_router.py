@@ -236,14 +236,34 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
              length = 50.0 # Default fallback
         
         # Parse speed
-        maxspeed = data.get("maxspeed", 50)
-        speed_kph = 50.0
-        if isinstance(maxspeed, list):
-             maxspeed = maxspeed[0]
-        try:
-            speed_kph = float(maxspeed)
-        except (ValueError, TypeError):
-            speed_kph = 50.0
+        maxspeed = data.get("maxspeed", None)
+        highway = data.get("highway", None)
+        speed_kph = 40.0 # Safer default
+
+        # Heuristic based on highway type/hierarchy
+        if highway:
+            if isinstance(highway, list): highway = highway[0]
+            if highway in ["motorway", "motorway_link", "trunk"]:
+                speed_kph = 100.0
+            elif highway in ["primary", "primary_link"]:
+                speed_kph = 60.0 # Urban primary
+            elif highway in ["secondary", "secondary_link"]:
+                speed_kph = 50.0
+            elif highway in ["tertiary", "tertiary_link"]:
+                speed_kph = 40.0
+            else:
+                speed_kph = 30.0 # residential etc
+
+        # Override with explicit maxspeed if valid
+        if maxspeed:
+            if isinstance(maxspeed, list): maxspeed = maxspeed[0]
+            try:
+                # Clean string "50 mph" -> 50
+                clean_speed = str(maxspeed).lower().replace("mph","").replace("kph","").replace("km/h","").strip()
+                val = float(clean_speed)
+                speed_kph = val
+            except (ValueError, TypeError):
+                pass
             
         typical_speed_mps = max(speed_kph * (1000.0 / 3600.0), 1.0)
         turn_penalty = 2.0
@@ -641,6 +661,73 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             except Exception:
                 return {"status": "no_path", "error": "Cannot snap to node"}
 
+            # ----------------------------------------------------
+            # 2. Fetch Live Traffic (Moved BEFORE routing)
+            # ----------------------------------------------------
+            import traceback
+            traffic_edges = []
+            try:
+                 # Calculate BBox for current route area
+                 # Pad the startup/goal area
+                 bounds = [
+                      min(req.start_lat, req.goal_lat) - 0.05,
+                      min(req.start_lon, req.goal_lon) - 0.05,
+                      max(req.start_lat, req.goal_lat) + 0.05,
+                      max(req.start_lon, req.goal_lon) + 0.05
+                 ]
+                 # Wait, fetcher needs (min_lat, min_lon, max_lat, max_lon) which is (S, W, N, E)
+                 bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
+                 
+                 incidents = fetcher.fetch_incidents(bbox) if fetcher else []
+                 
+                 live_speeds = {}
+                 blocks = set()
+                 
+                 for inc in incidents:
+                      try:
+                           # Find nearest node to incident
+                           n = nearest_node(local_graph, inc['lat'], inc['lon'])
+                           
+                           # Affect outgoing edges
+                           for e in local_graph.neighbors(n):
+                                severity = inc.get('severity', 'Medium')
+                                status = "moderate"
+                                if severity == 'High': status = "heavy"
+                                
+                                coords = [{"lat":p[0],"lon":p[1]} for p in e.geometry] if e.geometry else []
+                                if not coords and n in local_graph.coordinates and e.target in local_graph.coordinates:
+                                     # Fallback geometry
+                                     n_c = local_graph.coordinates[n]
+                                     t_c = local_graph.coordinates[e.target]
+                                     coords = [{"lat": n_c[0], "lon": n_c[1]}, {"lat": t_c[0], "lon": t_c[1]}]
+                                     
+                                traffic_edges.append({
+                                     "u": {"lat": local_graph.coordinates[n][0], "lon": local_graph.coordinates[n][1]},
+                                     "v": {"lat": local_graph.coordinates[e.target][0], "lon": local_graph.coordinates[e.target][1]},
+                                     "status": status,
+                                     "geometry": coords,
+                                     "description": inc.get("description", "Incident")
+                                })
+                                
+                                if "closure" in inc.get("type", "") or "closed" in inc.get("subtype", "").lower():
+                                     blocks.add((n, e.target))
+                                else:
+                                     # Slow down
+                                     factor = 0.2 if severity == "High" else 0.5
+                                     live_speeds[(n, e.target)] = e.typical_speed_mps * factor
+                      except Exception:
+                           continue
+                           
+                 # Apply to router
+                 loc_router.update_live_feeds(live_speeds, blocks)
+
+            except Exception:
+                 print("Traffic Fetch Error (ignored):")
+                 traceback.print_exc()
+
+            # ----------------------------------------------------
+            # 3. Calculate Routes
+            # ----------------------------------------------------
             # 1. AI Route (Optimized)
             eta_ai, path_ai, visited_ai = loc_router.route(start_node, goal_node, context=req.context, mode="ai")
             
@@ -670,61 +757,7 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             coords_ai = path_to_coords(local_graph, path_ai)
             coords_std = path_to_coords(local_graph, path_std)
             
-            steps = steps_from_coords(coords_ai) if len(coords_ai) >= 2 else []
-            
-            # Real Traffic Integration
-            traffic_edges = []
-            
-            # Fetch real incidents
-            if fetcher and local_graph:
-                 bounds = compute_graph_bounds(local_graph)
-                 # bounds is (N, S, E, W) -> fetcher needs (min_lat, min_lon, max_lat, max_lon)
-                 # Wait, fetcher needs (min_lat, min_lon, max_lat, max_lon) which is (S, W, N, E)
-                 bbox = (bounds[1], bounds[3], bounds[0], bounds[2])
-                 
-                 incidents = fetcher.fetch_incidents(bbox)
-                 
-                 live_speeds = {}
-                 blocks = set()
-                 
-                 for inc in incidents:
-                      try:
-                           # Find nearest node to incident
-                           n = nearest_node(local_graph, inc['lat'], inc['lon'])
-                           
-                           # Affect outgoing edges
-                           for e in local_graph.neighbors(n):
-                                severity = inc.get('severity', 'Medium')
-                                status = "moderate"
-                                if severity == 'High': status = "heavy"
-                                
-                                coords = [{"lat":p[0],"lon":p[1]} for p in e.geometry] if e.geometry else []
-                                if not coords and n in local_graph.coordinates and e.target in local_graph.coordinates:
-                                     # Fallback geometry
-                                     n_c = local_graph.coordinates[n]
-                                     t_c = local_graph.coordinates[e.target]
-                                     coords = [{"lat": n_c[0], "lon": n_c[1]}, {"lat": t_c[0], "lon": t_c[1]}]
-                                     
-                                traffic_edges.append({
-                                     "u": {"lat": local_graph.coordinates[n][0], "lon": local_graph.coordinates[n][1]},
-                                     "v": {"lat": local_graph.coordinates[e.target][0], "lon": local_graph.coordinates[e.target][1]},
-                                     "status": status,
-                                     "geometry": coords,
-                                     "description": inc.get('description', 'Incident')
-                                })
-                                
-                                # Update router logic
-                                if inc['type'] == 'closure':
-                                     blocks.add((n, e.target))
-                                else:
-                                     # Slow down
-                                     factor = 0.2 if severity == "High" else 0.5
-                                     live_speeds[(n, e.target)] = e.typical_speed_mps * factor
-                      except Exception:
-                           continue
-                           
-                 # Apply to router
-                 loc_router.update_live_feeds(live_speeds, blocks)
+            steps = steps_from_coords(coords_ai) if coords_ai else []
             
             return {
                 "status": "ok",
