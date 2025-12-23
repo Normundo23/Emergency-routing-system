@@ -1053,7 +1053,7 @@ if __name__ == "__main__":
     serve_p.add_argument("--east", type=float, help="bounding box east")
     serve_p.add_argument("--west", type=float, help="bounding box west")
     serve_p.add_argument("--host", type=str, default="0.0.0.0", help="API bind host")
-    serve_p.add_argument("--port", type=int, default=8000, help="API bind port")
+    serve_p.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)), help="API bind port")
     serve_p.add_argument("--no-cache", action="store_true", help="Duplicate graph download")
 
     args = parser.parse_args()
