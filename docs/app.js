@@ -38,24 +38,34 @@ const demandRegions = [
     { id: 9, center: [121.0350, 14.3950], radius: 0.007, name: 'Poblacion' }
 ];
 
+const DEFAULT_KEY = "YJ7ckNeXM9KeiCuC7DYuqo6JWvBOzgDl"; // Fallback for demo/mobile
+
 // Init
 (async function init() {
     try {
         const cfgRes = await fetch(`${API_BASE}/config`);
+        if (!cfgRes.ok) throw new Error("Backend unreachable");
+
         const cfg = await cfgRes.json();
 
         if (cfg.tomtom_key) {
             tomtomKey = cfg.tomtom_key;
             initMap(tomtomKey);
         } else {
-            alert("TomTom API Key missing! Check server configuration.");
+            console.warn("No key from backend, using default.");
+            initMap(DEFAULT_KEY);
         }
     } catch (e) {
-        console.error("Config failed", e);
+        console.error("Config failed or backend offline. Using default key.", e);
+        // Fallback init so map shows up
+        tomtomKey = DEFAULT_KEY;
+        initMap(tomtomKey);
+        setStatus("Backend Offline: Routing Disabled");
+        document.getElementById('alerts-panel').style.display = 'block';
+        document.getElementById('alert-content').innerText = "Cannot connect to server. Map is in offline mode.";
     }
 
     // Warm up backend
-    // Warm up backend with valid bbox
     try {
         fetch(`${API_BASE}/graph/load_bbox`, {
             method: 'POST',
