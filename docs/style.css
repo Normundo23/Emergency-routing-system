@@ -432,27 +432,30 @@ details[open] summary {
 /* --- Mobile Responsiveness --- */
 @media (max-width: 768px) {
   body {
-    flex-direction: column-reverse;
-    /* Map on top, sidebar on bottom */
+    flex-direction: column;
+    /* Standard stacking, use order to swap */
+  }
+
+  #map-container {
+    order: 1;
+    /* Map on Top */
+    width: 100%;
+    flex: 1 1 50%;
+    height: auto;
+    min-height: 40vh;
+    /* Ensure map has size */
   }
 
   #sidebar {
+    order: 2;
+    /* Controls on Bottom */
     width: 100%;
-    height: 45vh;
-    /* Occupy bottom 45% */
+    flex: 1 1 50%;
+    height: auto;
     border-right: none;
     border-top: 1px solid var(--border-color);
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
     padding: 16px;
     overflow-y: auto;
-    /* Enable scrolling for content */
-  }
-
-  #map-container {
-    width: 100%;
-    height: 55vh;
-    /* Occupy top 55% */
-    flex: none;
-    /* Disable flex-grow to enforce height */
   }
 }
