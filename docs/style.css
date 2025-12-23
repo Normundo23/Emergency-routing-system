@@ -39,6 +39,7 @@ body {
   flex-direction: column;
   z-index: 1000;
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+  overflow-y: auto;
 }
 
 h1 {
@@ -426,4 +427,32 @@ details[open] summary {
   font-family: monospace;
   font-size: 0.8em;
   color: #e2e8f0;
+}
+
+/* --- Mobile Responsiveness --- */
+@media (max-width: 768px) {
+  body {
+    flex-direction: column-reverse;
+    /* Map on top, sidebar on bottom */
+  }
+
+  #sidebar {
+    width: 100%;
+    height: 45vh;
+    /* Occupy bottom 45% */
+    border-right: none;
+    border-top: 1px solid var(--border-color);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
+    padding: 16px;
+    overflow-y: auto;
+    /* Enable scrolling for content */
+  }
+
+  #map-container {
+    width: 100%;
+    height: 55vh;
+    /* Occupy top 55% */
+    flex: none;
+    /* Disable flex-grow to enforce height */
+  }
 }
