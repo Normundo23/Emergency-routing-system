@@ -426,43 +426,50 @@ class ETAEstimator:
         else:
             print(f"No ETA model found at {model_path}, using fallback.")
 
-    def predict(self, edge: Edge, hour: int, context: Optional[Dict[str, Any]] = None) -> float:
-        # Fallback if no model
-        if self.model is None:
-            base = edge.live_eta()
-            if 7 <= hour <= 9 or 16 <= hour <= 18:
-                base *= 1.15
-            if context:
-                if context.get("weather") in {1, "rain"}: # Simple mapping
-                    base *= 1.1
-            return base
-
-        # Prepare features for model
-        # Features: distance_m, speed_limit_mps, hour, weather, incident
+    def predict_batch(self, edges: List[Edge], hour: int, context: Optional[Dict[str, Any]] = None) -> List[float]:
+        """
+        Batch prediction for multiple edges. Optimized for A* pre-computation.
+        """
+        # 1. Prepare Features
         weather_val = 0
         if context and context.get("weather") == "rain": weather_val = 1
         
-        # We can pass specific incident info in context, or assume 0 for now
         incident_val = 0
         if context and context.get("incident"): incident_val = context["incident"]
+        
+        # If no model, use fallback logic for all
+        if self.model is None:
+            results = []
+            for edge in edges:
+                base = edge.live_eta()
+                if 7 <= hour <= 9 or 16 <= hour <= 18: base *= 1.15
+                if weather_val == 1: base *= 1.1
+                results.append(base)
+            return results
 
-        # FAST inference: creating a dataframe for one row is slow.
-        # Ideally we vectorise this. For this prototype, we construct a simple list.
-        # We can use model.predict([[...]]) directly with numpy array
-        try:
-            features = [[
+        # 2. Build Feature Matrix
+        features = []
+        for edge in edges:
+            features.append([
                 edge.length_m,
                 edge.typical_speed_mps,
                 hour,
                 weather_val,
                 incident_val
-            ]]
-            # predict returns array, take first
-            pred_duration = self.model.predict(features)[0]
-            return max(pred_duration, 1.0) # avoid 0 or neg
-        except Exception:
-            # Fallback on error
-            return edge.live_eta()
+            ])
+            
+        # 3. Fast Vectorized Inference
+        try:
+            # Predict all at once
+            preds = self.model.predict(features)
+            return [max(p, 1.0) for p in preds]
+        except Exception as e:
+            print(f"Batch predict failed: {e}")
+            # Fallback
+            return [e.live_eta() for e in edges]
+
+    def predict(self, edge: Edge, hour: int, context: Optional[Dict[str, Any]] = None) -> float:
+        return self.predict_batch([edge], hour, context)[0]
 
 class DemandEstimator:
     """
@@ -497,15 +504,34 @@ class TrafficRouter:
         self.graph = graph
         self.eta_estimator = eta_estimator or ETAEstimator()
         self.demand_estimator = DemandEstimator() # Auto-load
+        self.cost_cache: Dict[int, float] = {} # id(edge) -> cost
+
+    def precompute_costs(self, context: Optional[Dict[str, Any]] = None):
+        """Batch compute all edge costs for current context."""
+        hour = time.localtime().tm_hour
+        all_edges = []
+        for edge_list in self.graph.adjacency.values():
+            all_edges.extend(edge_list)
+        
+        if not all_edges: return
+
+        costs = self.eta_estimator.predict_batch(all_edges, hour, context)
+        
+        self.cost_cache = {}
+        for edge, cost in zip(all_edges, costs):
+            self.cost_cache[id(edge)] = cost
 
     def _edge_cost(self, edge: Edge, context: Optional[Dict[str, Any]] = None, mode: str = "ai") -> float:
         if mode == "standard":
-             # Standard GPS assumption: Uses typical speed, ignores live traffic/temporary blocks
-             # (unless permanently blocked in map data, but we'll assume graph connectivity is static for standard)
+             # Standard GPS assumption
              speed = edge.typical_speed_mps
              return edge.length_m / max(speed, 0.1) + edge.turn_penalty_s
              
-        # AI Mode (Default): Uses live traffic / ML
+        # AI Mode - Use cache if available
+        if id(edge) in self.cost_cache:
+            return self.cost_cache[id(edge)]
+            
+        # Fallback (slow)
         hour = time.localtime().tm_hour
         return self.eta_estimator.predict(edge, hour, context=context)
     
@@ -724,6 +750,9 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             except Exception:
                  print("Traffic Fetch Error (ignored):")
                  traceback.print_exc()
+
+            # Pre-compute AI costs for entire graph (Speed Optimization)
+            loc_router.precompute_costs(req.context)
 
             # ----------------------------------------------------
             # 3. Calculate Routes
