@@ -1047,7 +1047,7 @@ if __name__ == "__main__":
     serve_p.add_argument("--place", type=str, help="place name for OSM (optional, overrides lat/lon)")
     serve_p.add_argument("--lat", type=float, default=14.4168, help="center latitude (Alabang)")
     serve_p.add_argument("--lon", type=float, default=121.0422, help="center longitude (Alabang)")
-    serve_p.add_argument("--dist", type=int, default=12000, help="radius in meters (12km covers Muntinlupa and nearby Manila)")
+    serve_p.add_argument("--dist", type=int, default=3000, help="radius in meters (3km covers immediate area)")
     serve_p.add_argument("--north", type=float, help="bounding box north")
     serve_p.add_argument("--south", type=float, help="bounding box south")
     serve_p.add_argument("--east", type=float, help="bounding box east")
