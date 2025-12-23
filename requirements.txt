@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+osmnx
+scikit-learn
+joblib
+requests
+networkx
+pydantic
+scipy
+pandas
+geopandas
+shapely
+matplotlib
