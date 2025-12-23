@@ -10,7 +10,7 @@ let goalMarker = null;
 // If served from localhost:8000, we can use relative paths, but absolute is safer for hybrid setup
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? ''
-    : 'http://localhost:8000';
+    : 'https://emergency-routing-system.onrender.com';
 
 // GeoJSON Sources IDs
 const SRC_AI_ROUTE = 'cortex-route';
