@@ -18,8 +18,14 @@
   --glass-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
+html,
 body {
   margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
   font-family: 'Inter', sans-serif;
   background: var(--bg-color);
   color: var(--text-primary);
