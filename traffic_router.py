@@ -215,21 +215,26 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
     if ox is None:
         raise ImportError("osmnx is required for OSM loading. Install with `pip install osmnx`.")
     
+    # Inclusive filter for all drivable roads including private/service
+    # "drive" excludes some service roads. We want everything.
+    # Note: custom_filter overwrites network_type logic roughly.
+    inclusive_filter = '["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|service|living_street"]'
+    
     # 1. Radius Mode (Preferred)
     if point is not None:
         print(f"Downloading graph from point {point} with radius {dist}m...", flush=True)
-        G = ox.graph_from_point(point, dist=dist, network_type="drive", simplify=True)
+        G = ox.graph_from_point(point, dist=dist, custom_filter=inclusive_filter, simplify=True)
     
     # 2. Place Mode
     elif place:
         print(f"Downloading graph for place: {place}...", flush=True)
-        G = ox.graph_from_place(place, network_type="drive", simplify=True)
+        G = ox.graph_from_place(place, custom_filter=inclusive_filter, simplify=True)
     
     # 3. BBox Mode
     elif None not in (north, south, east, west):
         print(f"Downloading graph from bbox...", flush=True)
         # osmnx 1.x uses bbox=(north, south, east, west) as keyword argument
-        G = ox.graph_from_bbox(bbox=(north, south, east, west), network_type="drive", simplify=True)
+        G = ox.graph_from_bbox(bbox=(north, south, east, west), custom_filter=inclusive_filter, simplify=True)
              
     else:
         raise ValueError("Provide point+dist, place, or bounding box.")
@@ -303,13 +308,14 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
             # We need (lat, lon).
             line_geom = data["geometry"]
             try:
-                # Handle cases where line_geom might be just a list or Shapely object
+                # Handle Shapely LineString
                 if hasattr(line_geom, "coords"):
                      edge_geom = [(lat, lon) for lon, lat in line_geom.coords]
-                else: 
-                     # Fallback if it's already a list or other format
-                     pass 
-            except Exception:
+                # Handle raw list if simplified differently
+                elif isinstance(line_geom, list):
+                     edge_geom = [(p[1], p[0]) for p in line_geom]
+            except Exception as e:
+                # print(f"DEBUG: Geom parse fail: {e}", flush=True)
                 pass
         
         # Add u -> v
