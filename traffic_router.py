@@ -223,18 +223,18 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
     # 1. Radius Mode (Preferred)
     if point is not None:
         print(f"Downloading graph from point {point} with radius {dist}m...", flush=True)
-        G = ox.graph_from_point(point, dist=dist, custom_filter=inclusive_filter, simplify=True)
+        G = ox.graph_from_point(point, dist=dist, custom_filter=inclusive_filter, simplify=False)
     
     # 2. Place Mode
     elif place:
         print(f"Downloading graph for place: {place}...", flush=True)
-        G = ox.graph_from_place(place, custom_filter=inclusive_filter, simplify=True)
+        G = ox.graph_from_place(place, custom_filter=inclusive_filter, simplify=False)
     
     # 3. BBox Mode
     elif None not in (north, south, east, west):
         print(f"Downloading graph from bbox...", flush=True)
         # osmnx 1.x uses bbox=(north, south, east, west) as keyword argument
-        G = ox.graph_from_bbox(bbox=(north, south, east, west), custom_filter=inclusive_filter, simplify=True)
+        G = ox.graph_from_bbox(bbox=(north, south, east, west), custom_filter=inclusive_filter, simplify=False)
              
     else:
         raise ValueError("Provide point+dist, place, or bounding box.")
@@ -299,7 +299,9 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
                 pass
             
         typical_speed_mps = max(speed_kph * (1000.0 / 3600.0), 1.0)
-        turn_penalty = 2.0
+        # With simplify=False, we have many short edges.
+        # Adding a penalty per edge would break routing (1km road = 50 edges = 100s penalty).
+        turn_penalty = 0.0 
         
         # Extract geometry (curved roads)
         edge_geom = []
@@ -314,9 +316,14 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
                 # Handle raw list if simplified differently
                 elif isinstance(line_geom, list):
                      edge_geom = [(p[1], p[0]) for p in line_geom]
+                # if len(edge_geom) > 2:
+                #      print(f"DEBUG: Captured {len(edge_geom)} points for edge {u}->{v}", flush=True)
             except Exception as e:
-                # print(f"DEBUG: Geom parse fail: {e}", flush=True)
+                # print(f"DEBUG: Geom parse fail for edge {u}->{v}: {e}", flush=True)
                 pass
+        else:
+            # print(f"DEBUG: No geometry for edge {u}->{v}", flush=True)
+            pass
         
         # Add u -> v
         g.add_edge(str(u), str(v), length_m=length, typical_speed_mps=typical_speed_mps, turn_penalty_s=turn_penalty, geometry=edge_geom)
