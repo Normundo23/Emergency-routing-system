@@ -708,6 +708,7 @@ def build_app() -> Any:
     app = FastAPI()
     
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.middleware.gzip import GZipMiddleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -715,13 +716,14 @@ def build_app() -> Any:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     @app.on_event("startup")
     async def startup_event():
         global graph, router, loaded_bbox
         print("Executing startup... checking for graph cache.", flush=True)
         try:
-            cache_path = Path("graph_cache/graph.pkl")
+            cache_path = Path("graph_cache/graph_v2.pkl")
             if cache_path.exists():
                 print(f"Loading graph from {cache_path}...", flush=True)
                 loaded_graph = joblib.load(cache_path)
@@ -1194,7 +1196,7 @@ def build_app() -> Any:
 
 
 # --- Caching & Helpers --------------------------------------------------------
-GRAPH_CACHE_FILE = "city_graph.pkl"
+GRAPH_CACHE_FILE = "city_graph_v2.pkl"
 
 def compute_graph_bounds(graph: Graph) -> Tuple[float, float, float, float]:
     """Return (north, south, east, west) of the graph."""
@@ -1258,10 +1260,10 @@ if __name__ == "__main__":
         print("Maps will be downloaded automatically when you request a route.")
         
         # Start with minimal sample graph (will be replaced on-demand)
-        if os.path.exists("graph_cache/graph.pkl"):
+        if os.path.exists("graph_cache/graph_v2.pkl"):
              print("Loading default graph from cache...")
              try:
-                 graph = joblib.load("graph_cache/graph.pkl")
+                 graph = joblib.load("graph_cache/graph_v2.pkl")
              except:
                  graph = Graph() # Start empty, load on demand
              graph = Graph()
