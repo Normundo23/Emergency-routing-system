@@ -869,22 +869,33 @@ def build_app() -> Any:
 
             # 1. Loading / Caching Optimization
             # Try to reuse the existing global graph first to avoid slow downloads
+            reuse_graph = False
             if graph is not None and len(graph.adjacency) > 0:
-                # Check if points are roughly within existing graph bounds (heuristic)
-                # Or just assume for this demo that we stay in Muntinlupa
+                 # Check bounds
+                 bounds = compute_graph_bounds(graph) # (n, s, e, w)
+                 # Add small buffer to check if points are inside
+                 if (req.start_lat <= bounds[0] and req.start_lat >= bounds[1] and 
+                     req.start_lon <= bounds[2] and req.start_lon >= bounds[3] and
+                     req.goal_lat <= bounds[0] and req.goal_lat >= bounds[1] and
+                     req.goal_lon <= bounds[2] and req.goal_lon >= bounds[3]):
+                      reuse_graph = True
+                      
+            if reuse_graph:
                  local_graph = graph
                  print("Reusing existing global graph (Fast Mode)", flush=True)
             else:
                  # Fallback to dynamic loading (Slow)
-                 print("Graph not loaded. Downloading...", flush=True)
+                 print("Graph not loaded or out of bounds. Downloading...", flush=True)
                  center_lat = (req.start_lat + req.goal_lat) / 2
                  center_lon = (req.start_lon + req.goal_lon) / 2
                  import math
                  dlat = req.goal_lat - req.start_lat
                  dlon = req.goal_lon - req.start_lon
                  route_dist_deg = math.sqrt(dlat**2 + dlon**2)
-                 # radius_m = max(3000, int((route_dist_deg * 111000 / 2) + 2000))
-                 radius_m = 1000 # Force small radius to avoid timeout
+                 
+                 # Dynamic Radius: Distance + 3km buffer
+                 # 1 deg ~ 111km
+                 radius_m = max(3000, int((route_dist_deg * 111000 / 2) + 3000))
                  
                  local_graph = download_graph_with_timeout(center_lat, center_lon, radius_m, timeout=60)
                  if local_graph is None:
