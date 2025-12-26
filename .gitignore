@@ -6,3 +6,4 @@ api_cache/
 cache/
 graph_cache/
 .env
+node_modules/

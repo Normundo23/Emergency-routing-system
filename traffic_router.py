@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import joblib
 import pandas as pd
+from scipy.spatial import cKDTree
 from real_data_fetcher import RealDataFetcher
 
 # --- Configuration ---
@@ -70,6 +71,18 @@ class Graph:
     adjacency: Dict[str, List[Edge]] = field(default_factory=dict)
     coordinates: Dict[str, Tuple[float, float]] = field(default_factory=dict)  # optional, for heuristic
     source: str = "unknown"
+    _kdtree: Optional[cKDTree] = None
+    _node_list: List[str] = field(default_factory=list)
+
+    def build_kdtree(self):
+        """Builds KDTree for fast nearest-node lookup."""
+        if not self.coordinates:
+            return
+        self._node_list = list(self.coordinates.keys())
+        # cKDTree expects (x, y) -> (lon, lat) usually, but we stored (lat, lon)
+        # Let's standardize on (lat, lon) for the tree to match our input queries
+        coords = [self.coordinates[n] for n in self._node_list]
+        self._kdtree = cKDTree(coords)
 
     def add_edge(
         self,
@@ -107,16 +120,31 @@ def haversine_m(src: Tuple[float, float], dst: Tuple[float, float]) -> float:
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def optimistic_heuristic(graph: Graph, node: str, goal: str) -> float:
+def fast_heuristic(graph: Graph, node: str, goal: str) -> float:
     """
-    Admissible heuristic: straight-line distance / optimistic speed.
-    If coordinates are missing, return 0 (falls back to Dijkstra).
+    Optimized heuristic using equirectangular approximation.
+    Much faster than Haversine for A* inner loop.
     """
     if node not in graph.coordinates or goal not in graph.coordinates:
         return 0.0
-    dist = haversine_m(graph.coordinates[node], graph.coordinates[goal])
-    optimistic_speed = 30.0  # m/s ~ 108 km/h as an upper bound for emergency vehicles
-    return dist / optimistic_speed
+    
+    lat1, lon1 = graph.coordinates[node]
+    lat2, lon2 = graph.coordinates[goal]
+    
+    # Approx degrees to meters (at ~14 deg lat)
+    # 1 deg lat ~ 110.574 km
+    # 1 deg lon ~ 111.320 * cos(lat) km => at 14N: ~108 km
+    
+    d_lat = (lat1 - lat2) * 110574.0
+    d_lon = (lon1 - lon2) * 108000.0 # Approximate for Philippines
+    
+    dist_sq = d_lat*d_lat + d_lon*d_lon
+    
+    # We want time = dist / max_speed
+    # Avoid sqrt if we can, but A* needs valid admissible heuristic.
+    # dist = math.sqrt(dist_sq)
+    # Using 30m/s (108km/h) as max speed
+    return math.sqrt(dist_sq) / 30.0
 
 
 def astar(
@@ -322,6 +350,10 @@ def download_graph_with_timeout(lat: float, lon: float, radius: int, timeout: in
         print(f"Download failed: {e}", flush=True)
         return None
 
+    if graph.source == "osm" and graph._kdtree is None:
+         graph.build_kdtree()
+    return graph
+
 def save_graph_cache(graph: Graph, path: Path):
     joblib.dump(graph, path)
 
@@ -331,8 +363,14 @@ def load_graph_cache(path: Path) -> Graph:
 
 def nearest_node(graph: Graph, lat: float, lon: float) -> str:
     """
-    Find nearest node in graph by haversine distance. O(N), fine for moderate graphs.
+    Find nearest node. Uses KDTree if available, else O(N) fallback.
     """
+    if graph._kdtree:
+        # Query nearest neighbor (k=1)
+        dist, idx = graph._kdtree.query((lat, lon))
+        return graph._node_list[idx]
+
+    # Fallback legacy linear scan
     best_id = None
     best_d = math.inf
     for node_id, (nlat, nlon) in graph.coordinates.items():
@@ -504,36 +542,57 @@ class TrafficRouter:
         self.graph = graph
         self.eta_estimator = eta_estimator or ETAEstimator()
         self.demand_estimator = DemandEstimator() # Auto-load
-        self.cost_cache: Dict[int, float] = {} # id(edge) -> cost
-
-    def precompute_costs(self, context: Optional[Dict[str, Any]] = None):
-        """Batch compute all edge costs for current context."""
-        hour = time.localtime().tm_hour
-        all_edges = []
-        for edge_list in self.graph.adjacency.values():
-            all_edges.extend(edge_list)
+        self.base_costs: Dict[int, float] = {}   # id(edge) -> nominal traversal time
+        self.dynamic_penalties: Dict[int, float] = {} # id(edge) -> penalty multiplier
+        self.last_context_hash = None
+        self.global_factor = 1.0
         
-        if not all_edges: return
-
-        costs = self.eta_estimator.predict_batch(all_edges, hour, context)
         
-        self.cost_cache = {}
-        for edge, cost in zip(all_edges, costs):
-            self.cost_cache[id(edge)] = cost
+        # Precompute base costs once
+        self._rebuild_base_costs()
+
+    def set_graph(self, new_graph: Graph):
+        """Update graph and rebuild caches."""
+        self.graph = new_graph
+        self._rebuild_base_costs()
+
+    def _rebuild_base_costs(self):
+        """Internal helper to compute base costs."""
+        self.base_costs.clear()
+        for edges in self.graph.adjacency.values():
+            for e in edges:
+                 # Base time = length / typical_speed + turn_penalty
+                 # We treat this as the invariant part
+                 cost = e.length_m / max(e.typical_speed_mps, 0.1) + e.turn_penalty_s
+                 self.base_costs[id(e)] = cost
+
+    def _update_global_factor(self, context: Optional[Dict[str, Any]] = None):
+        """Compute naive global factors (rain, time) once per request."""
+        factor = 1.0
+        if context:
+             if context.get("weather") == "rain": factor *= 1.1
+             # We could add time-of-day checks here, but let's keep it simple and fast
+        self.global_factor = factor
 
     def _edge_cost(self, edge: Edge, context: Optional[Dict[str, Any]] = None, mode: str = "ai") -> float:
         if mode == "standard":
              # Standard GPS assumption
-             speed = edge.typical_speed_mps
-             return edge.length_m / max(speed, 0.1) + edge.turn_penalty_s
+             return self.base_costs.get(id(edge), edge.length_m / max(edge.typical_speed_mps, 0.1))
              
-        # AI Mode - Use cache if available
-        if id(edge) in self.cost_cache:
-            return self.cost_cache[id(edge)]
-            
-        # Fallback (slow)
-        hour = time.localtime().tm_hour
-        return self.eta_estimator.predict(edge, hour, context=context)
+        # AI Mode - Optimized
+        # nominal * global_factor * specific_penalty
+        
+        # 1. Base Cost (Cached)
+        cost = self.base_costs.get(id(edge), 0.0)
+        
+        # 2. Dynamic Penalty (Live Incidents)
+        if id(edge) in self.dynamic_penalties:
+             cost *= self.dynamic_penalties[id(edge)]
+             
+        # 3. Global Factor (Weather/Time) - updated separately
+        cost *= self.global_factor
+        
+        return cost
     
     def update_live_feeds(
         self,
@@ -541,21 +600,45 @@ class TrafficRouter:
         blocks: Set[Tuple[str, str]],
     ) -> None:
         """
-        live_speeds: mapping of (source, target) -> speed_mps
-        blocks: set of (source, target) edges to block
+        Updates internal penalty cache based on live data.
         """
+        self.dynamic_penalties.clear()
+        
+        # Create a quick lookup for edges? 
+        # Actually we can iterate graph or iterate inputs. 
+        # Iterating graph is safer ensuring we find the edge objects.
+        # But O(Edges) is better than O(V) if graph is large? No, graph is small-ish.
+        # Let's iterate inputs if possible, but we need the Edge objects.
+        # Map (u,v) -> Edge would be faster.
+        
+        # Build temp index if not exists (or we could maintain it)
+        # For now, let's just do the safe iteration we had, but optimize what we store.
+        
+        # Optimization: Build a (u,v)->edge map once? 
+        # Doing it on the fly:
+        
         for src, edges in self.graph.adjacency.items():
             for e in edges:
                 key = (src, e.target)
-                if key in live_speeds:
-                    e.live_speed_mps = live_speeds[key]
+                
+                # Check Blockage
                 if key in blocks:
                     e.blocked = True
+                    # Massive penalty for A* to avoid (soft block) or hard block
+                    self.dynamic_penalties[id(e)] = 1000.0 
                 else:
-                    e.blocked = e.blocked and key in blocks  # keep existing unless cleared
+                    e.blocked = False # Autoclear if not in blocks (simplification)
+                
+                # Check Speed
+                if key in live_speeds:
+                    live_s = live_speeds[key]
+                    ratio = e.typical_speed_mps / max(live_s, 0.1)
+                    if ratio > 1.0:
+                         self.dynamic_penalties[id(e)] = ratio
+
 
     def route(self, start: str, goal: str, context: Optional[Dict[str, Any]] = None, mode: str = "ai") -> Tuple[float, List[str], int]:
-        heuristic_fn = lambda node: optimistic_heuristic(self.graph, node, goal)
+        heuristic_fn = lambda node: fast_heuristic(self.graph, node, goal)
         return astar(
             self.graph,
             start,
@@ -583,13 +666,22 @@ def load_graph_cache(path: Path) -> Graph:
     return joblib.load(path)
 
 
+
+# --- Global State for Render/Uvicorn ---
+graph = Graph()
+router: Optional[TrafficRouter] = None
+eta_estimator: Optional[ETAEstimator] = None
+
 # --- FastAPI service updates ---
-def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any:
+def build_app() -> Any:
+
     """
     Build a FastAPI app serving /route. Requires fastapi+pydantic+uvicorn installed.
     """
     if FastAPI is None:
         raise ImportError("fastapi and pydantic are required. Install with `pip install fastapi uvicorn`.")
+    
+    global router, eta_estimator
     
     # Use ML estimator if not provided
     if eta_estimator is None:
@@ -609,7 +701,7 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
 
     @app.on_event("startup")
     async def startup_event():
-        nonlocal graph, router
+        global graph, router, loaded_bbox
         print("Executing startup... checking for graph cache.", flush=True)
         try:
             cache_path = Path("graph_cache/graph.pkl")
@@ -618,14 +710,118 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                 loaded_graph = joblib.load(cache_path)
                 if loaded_graph:
                     graph = loaded_graph
-                    router.graph = loaded_graph
+                    if graph._kdtree is None:
+                        graph.build_kdtree() # Ensure tree is built
+                    # router.graph = loaded_graph <--- OLD BUGGY WAY
+                    router.set_graph(loaded_graph) # Correctly rebuilds costs
                     print(f"Graph loaded from cache. Nodes: {len(graph.coordinates)}", flush=True)
             else:
                 print("No graph cache found.", flush=True)
         except Exception as e:
             print(f"Failed to load cache on startup: {e}", flush=True)
 
+    # Loaded BBox State
     loaded_bbox: Optional[Tuple[float, float, float, float]] = None
+
+    # Global caching for incidents
+    _incident_cache = {
+        "data": [],
+        "timestamp": 0.0
+    }
+    
+    def process_incidents_to_penalties(target_graph: Graph, incidents: List[Dict[str, Any]]) -> Tuple[Dict, Set]:
+        """Helper to convert list of incidents to router penalties."""
+        live_speeds = {}
+        blocks = set()
+        
+        for inc in incidents:
+              try:
+                   n = nearest_node(target_graph, inc['lat'], inc['lon'])
+                   for e in target_graph.neighbors(n):
+                        severity = inc.get('severity', 'Medium')
+                        
+                        if "closure" in inc.get("type", "") or "closed" in inc.get("subtype", "").lower():
+                             blocks.add((n, e.target))
+                        else:
+                             # Slow down
+                             factor = 0.2 if severity == "High" else 0.5
+                             live_speeds[(n, e.target)] = e.typical_speed_mps * factor
+              except Exception:
+                   continue
+        return live_speeds, blocks
+
+    def update_traffic_state():
+        """Refreshes incidents and updates global router penalties."""
+        global graph, router
+        if graph is None or router is None: return
+        
+        now = time.time()
+        # Refresh cache if older than 10 seconds (check stability elsewhere)
+        # But for simulated data, we want stability based on time windows.
+        # If cache is populated and valid window, skip.
+        
+        # 30 second refresh check -> Increased to 300s (5 mins) for UI stability
+        if now - _incident_cache["timestamp"] < 300 and _incident_cache["data"]:
+             # print("DEBUG: Using cached traffic state.", flush=True)
+             return
+
+        # 1. Fetch Real or Generate Simulated
+        active_incidents = []
+        source_type = "Simulated"
+        
+        if fetcher:
+            # Use real data
+             try:
+                 bbox = (14.35, 121.00, 14.45, 121.10) 
+                 found = fetcher.fetch_incidents(bbox)
+                 if found:
+                      active_incidents = found
+                      source_type = "Real (TomTom)"
+             except Exception as e:
+                 print(f"Fetch error: {e}")
+        
+        if not active_incidents:
+            # Simulated fallback (Stable)
+            source_type = "Simulated (Fixed Seed)"
+            blackspots = [
+                {"name": "Alabang Viaduct (Merge Point)", "lat": 14.4206, "lon": 121.0458, "risk": "Extreme"},
+                {"name": "National Rd / Putatan H-way", "lat": 14.3955, "lon": 121.0435, "risk": "High"},
+                {"name": "Sucat Interchange", "lat": 14.4447, "lon": 121.0475, "risk": "High"},
+                {"name": "Tunasan Sharp Curve", "lat": 14.3768, "lon": 121.0505, "risk": "Medium"},
+                {"name": "Filinvest Ave Intersection", "lat": 14.4140, "lon": 121.0420, "risk": "Medium"}
+            ]
+            
+            import random
+            seed_val = int(time.time() / 300) # 5 min fixed window
+            rng = random.Random(seed_val)
+            
+            for spot in blackspots:
+                if rng.random() < 0.4:
+                    lat_jit = spot["lat"] + (rng.random() - 0.5) * 0.002
+                    lon_jit = spot["lon"] + (rng.random() - 0.5) * 0.002
+                    type_event = "accident" if rng.random() < 0.7 else "closure"
+                    subtype = "Car Crash"
+                    if type_event == "closure": subtype = "Road Construction"
+                    
+                    active_incidents.append({
+                        "lat": lat_jit,
+                        "lon": lon_jit,
+                        "type": type_event,
+                        "subtype": subtype,
+                        "severity": spot["risk"],
+                        "description": f"Incident at {spot['name']}"
+                    })
+
+        # 2. Update Cache
+        _incident_cache["data"] = active_incidents
+        _incident_cache["timestamp"] = now
+        
+        # 3. Sync Router (Global)
+        live_speeds, blocks = process_incidents_to_penalties(graph, active_incidents)
+        router.update_live_feeds(live_speeds, blocks)
+        print(f"DEBUG: Traffic state updated ({source_type}). {len(active_incidents)} incidents. {len(blocks)} blocks.", flush=True)
+
+
 
 
 
@@ -647,7 +843,7 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
     @app.post("/route/coords")
     def route_by_coords(req: RouteCoordsRequest) -> Dict[str, Any]:
         try:
-            nonlocal graph, router
+            global graph, router
             print(f"--- Route Request: {req.start_lat},{req.start_lon} -> {req.goal_lat},{req.goal_lon}", flush=True)
             if graph is None: print("ERROR: graph is None", flush=True)
             else: print(f"DEBUG: graph nodes: {len(graph.adjacency)}", flush=True)
@@ -677,7 +873,8 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                  
                  # Update global
                  graph = local_graph
-                 router.graph = local_graph
+                 router.set_graph(local_graph) # Rebuild cache for new graph
+
 
             loc_router = TrafficRouter(local_graph, eta_estimator)
             
@@ -692,83 +889,52 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             # ----------------------------------------------------
             import traceback
             traffic_edges = []
-            try:
-                 # Calculate BBox for current route area
-                 # Pad the startup/goal area
-                 bounds = [
-                      min(req.start_lat, req.goal_lat) - 0.05,
-                      min(req.start_lon, req.goal_lon) - 0.05,
-                      max(req.start_lat, req.goal_lat) + 0.05,
-                      max(req.start_lon, req.goal_lon) + 0.05
-                 ]
-                 # Wait, fetcher needs (min_lat, min_lon, max_lat, max_lon) which is (S, W, N, E)
-                 bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
-                 
-                 incidents = fetcher.fetch_incidents(bbox) if fetcher else []
-                 
-                 live_speeds = {}
-                 blocks = set()
-                 
-                 for inc in incidents:
-                      try:
-                           # Find nearest node to incident
-                           n = nearest_node(local_graph, inc['lat'], inc['lon'])
-                           
-                           # Affect outgoing edges
-                           for e in local_graph.neighbors(n):
-                                severity = inc.get('severity', 'Medium')
-                                status = "moderate"
-                                if severity == 'High': status = "heavy"
-                                
-                                coords = [{"lat":p[0],"lon":p[1]} for p in e.geometry] if e.geometry else []
-                                if not coords and n in local_graph.coordinates and e.target in local_graph.coordinates:
-                                     # Fallback geometry
-                                     n_c = local_graph.coordinates[n]
-                                     t_c = local_graph.coordinates[e.target]
-                                     coords = [{"lat": n_c[0], "lon": n_c[1]}, {"lat": t_c[0], "lon": t_c[1]}]
-                                     
-                                traffic_edges.append({
-                                     "u": {"lat": local_graph.coordinates[n][0], "lon": local_graph.coordinates[n][1]},
-                                     "v": {"lat": local_graph.coordinates[e.target][0], "lon": local_graph.coordinates[e.target][1]},
-                                     "status": status,
-                                     "geometry": coords,
-                                     "description": inc.get("description", "Incident")
-                                })
-                                
-                                if "closure" in inc.get("type", "") or "closed" in inc.get("subtype", "").lower():
-                                     blocks.add((n, e.target))
-                                else:
-                                     # Slow down
-                                     factor = 0.2 if severity == "High" else 0.5
-                                     live_speeds[(n, e.target)] = e.typical_speed_mps * factor
-                      except Exception:
-                           continue
-                           
-                 # Apply to router
-                 loc_router.update_live_feeds(live_speeds, blocks)
-
-            except Exception:
-                 print("Traffic Fetch Error (ignored):")
-                 traceback.print_exc()
-
-            # Pre-compute AI costs for entire graph (Speed Optimization)
-            loc_router.precompute_costs(req.context)
-
+            
             # ----------------------------------------------------
+            # 2. Fetch Live Traffic (Unified)
+            # ----------------------------------------------------
+            # Ensure global state is fresh
+            update_traffic_state()
+            
+            # Use the GLOBAL router if we are using the GLOBAL graph
+            # This ensures we share the penalties we just computed in update_traffic_state
+            if local_graph is graph:
+                 print("Using global router instance", flush=True)
+                 active_router = router
+            else:
+                 # We have a specific local graph (downloaded freshly)
+                 # We must manually sync the penalties from the global state or re-compute
+                 print("Using local router instance (syncing)", flush=True)
+                 active_router = loc_router
+                 # Sync penalties that apply to this subgraph
+                 # It's faster to just re-apply the incidents to this new small graph
+                 cached_incidents = _incident_cache["data"]
+                 live_speeds, blocks = process_incidents_to_penalties(local_graph, cached_incidents)
+                 active_router.update_live_feeds(live_speeds, blocks)
+            
+            active_router._update_global_factor(req.context)
+            
+            # Capture traffic edges for response (Visuals)
+            traffic_edges = []
+            # We can reconstruct them from the incident cache for the response
+            # Or just ignore, since frontend calls /incidents separately
+            
+             # ----------------------------------------------------
             # 3. Calculate Routes
             # ----------------------------------------------------
             # 1. AI Route (Optimized)
-            eta_ai, path_ai, visited_ai = loc_router.route(start_node, goal_node, context=req.context, mode="ai")
-            
+            try:
+                eta_ai, path_ai, visited_ai = active_router.route(start_node, goal_node, context=req.context, mode="ai")
+            except ValueError:
+                 return {"status": "no_path", "error": "No AI path found"}
+
             # 2. Standard Route (Baseline)
             try:
-                eta_std_planned, path_std, _ = loc_router.route(start_node, goal_node, context=req.context, mode="standard")
+                eta_std_planned, path_std, _ = active_router.route(start_node, goal_node, context=req.context, mode="standard")
             except ValueError:
-                # Fallback if standard route fails (graph disconnected?)
                 path_std = path_ai
                 
             # 3. Calculate REAL-WORLD ETA for Standard Route
-            # (What happens if you actually drive the standard path in current traffic)
             eta_std_real = 0.0
             if path_std:
                  for i in range(len(path_std) - 1):
@@ -780,9 +946,42 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                                 target_edge = e
                                 break
                       if target_edge:
-                           # Cost using AI logic (Real world)
-                           eta_std_real += loc_router._edge_cost(target_edge, context=req.context, mode="ai")
+                           # Cost using AI logic (Real world penalties)
+                           eta_std_real += active_router._edge_cost(target_edge, context=req.context, mode="ai")
             
+            time_saved = eta_std_real - eta_ai
+            
+            # Diagnostic Stats
+            len_ai = sum(local_graph.adjacency[path_ai[i]][0].length_m for i in range(len(path_ai)-1)) if len(path_ai) > 1 else 0
+            len_std = sum(local_graph.adjacency[path_std[i]][0].length_m for i in range(len(path_std)-1)) if path_std and len(path_std) > 1 else 0
+            
+            avg_speed_ai = (len_ai / eta_ai) * 3.6 if eta_ai > 0 else 0
+            avg_speed_std = (len_std / eta_std_real) * 3.6 if eta_std_real > 0 else 0
+            
+            print(f"--- Route Comparison ---", flush=True)
+            print(f"Standard Route: {len(path_std)} nodes, {len_std/1000:.2f} km, {eta_std_real:.1f}s ~ {int(avg_speed_std)} km/h")
+            print(f"AI Route:       {len(path_ai)} nodes, {len_ai/1000:.2f} km, {eta_ai:.1f}s ~ {int(avg_speed_ai)} km/h")
+            print(f"Time Saved: {time_saved:.1f}s")
+            
+            # Check for ghost penalties
+            if abs(eta_std_real - eta_ai) > 1.0 and len(blocks) == 0 and len(live_speeds) == 0:
+                 print("WARNING: Divergence detected despite NO active incidents via feeds.")
+                 # Print first few edge costs to see why
+                 if path_std and len(path_std) > 1:
+                      u, v = path_std[0], path_std[1]
+                      for e in local_graph.neighbors(u):
+                           if e.target == v:
+                                base = active_router.base_costs.get(id(e), 0)
+                                dyn = active_router.dynamic_penalties.get(id(e), 1.0)
+                                print(f"DEBUG Standard Edge 0: {u}->{v} Length: {e.length_m}m Speed: {e.typical_speed_mps}mps BaseCost: {base:.1f} Penalty: {dyn}")
+                                
+
+            if time_saved > 0:
+                 print("AI Recommendation: DETOUR (Faster)", flush=True)
+            else:
+                 print("AI Recommendation: STANDARD (Optimal)", flush=True)
+            print("------------------------", flush=True)
+
             coords_ai = path_to_coords(local_graph, path_ai)
             coords_std = path_to_coords(local_graph, path_std)
             
@@ -799,12 +998,12 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                 # Comparison Data
                 "eta_std_real": eta_std_real,
                 "path_std_coords": coords_std,
-                "time_saved_seconds": max(0, eta_std_real - eta_ai),
+                "time_saved_seconds": max(0, time_saved),
                 
                 "steps": steps,
                 "traffic": traffic_edges,
                 "visited_nodes": visited_ai,
-                 "graph_source": local_graph.source
+                "graph_source": local_graph.source
             }
 
         except Exception as e:
@@ -856,66 +1055,10 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
     @app.get("/incidents")
     def incidents_feed() -> Dict[str, Any]:
         """
-        Returns simulated accidents/closures focused on "Accident Prone Areas"
+        Returns accidents. Sources from the shared cache.
         """
-        # Known Blackspots in Muntinlupa (Real-life high risk areas)
-        active_incidents = []
-        
-        # 1. Try Real Data
-        if fetcher:
-            # Get bounding box of our focus area (Muntinlupa approximate)
-            # minLat, minLon, maxLat, maxLon
-            bbox = (14.35, 121.00, 14.45, 121.10) 
-            real_incidents = fetcher.fetch_incidents(bbox)
-            if real_incidents:
-                return {"status": "ok", "incidents": real_incidents, "source": "tomtom"}
-        
-        # 2. Fallback to Simulated Data (if no key or fetch failed)
-        blackspots = [
-            {"name": "Alabang Viaduct (Merge Point)", "lat": 14.4206, "lon": 121.0458, "risk": "Extreme"},
-            {"name": "National Rd / Putatan H-way", "lat": 14.3955, "lon": 121.0435, "risk": "High"},
-            {"name": "Sucat Interchange", "lat": 14.4447, "lon": 121.0475, "risk": "High"},
-            {"name": "Tunasan Sharp Curve", "lat": 14.3768, "lon": 121.0505, "risk": "Medium"},
-            {"name": "Filinvest Ave Intersection", "lat": 14.4140, "lon": 121.0420, "risk": "Medium"}
-        ]
-        
-        import random
-        
-        for spot in blackspots:
-            # 40% chance of an incident at any blackspot at any time
-            if random.random() < 0.4:
-                # Jitter location slightly so it's not always exact same pixel
-                lat_jit = spot["lat"] + (random.random() - 0.5) * 0.002
-                lon_jit = spot["lon"] + (random.random() - 0.5) * 0.002
-                
-                type_event = "accident" if random.random() < 0.7 else "closure"
-                subtype = "Car Crash"
-                if type_event == "closure": subtype = "Road Construction"
-                elif random.random() < 0.3: subtype = "Vehicle Breakdown"
-                
-                # Simulate time: 10-60 mins ago
-                import datetime
-                now = datetime.datetime.now()
-                delta = random.randint(10, 60)
-                start_t = (now - datetime.timedelta(minutes=delta)).isoformat()
-                
-                active_incidents.append({
-                    "lat": lat_jit,
-                    "lon": lon_jit,
-                    "type": type_event,
-                    "subtype": subtype,
-                    "severity": spot["risk"],
-                    "description": f"{'Collision' if type_event == 'accident' else 'Road Works'} at {spot['name']}",
-                    "startTime": start_t,
-                    "endTime": None
-                })
-                
-        # Add a few random ones for broader coverage (10% chance nearby)
-        if random.random() < 0.3:
-            pass # Keep clean for now, focus on blackspots
-                
-        return {"status": "ok", "incidents": active_incidents}
-
+        update_traffic_state()
+        return {"status": "ok", "incidents": _incident_cache["data"]}
 
 
     @app.get("/predict/demand")
@@ -945,17 +1088,11 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
     def traffic_status() -> Dict[str, Any]:
         """
         Return all edges with their congestion status.
-        Congestion = 1 - (live_speed / typical_speed).
+        Now synced with the ACTUAL router penalties.
         """
-        # Simulate some live traffic for the view
-        # In a real app, this would come from the router's live state
+        update_traffic_state() # Ensure fresh
+        
         edges_data = []
-        import random
-        
-        # If the graph is small (sample), we iterate all. If OSM, we might want to limit or simplify.
-        # For this demo, we'll return a subset or simplified representation to avoid huge payloads.
-        # We need coordinates for the edges.
-        
         for u, neighbors in graph.adjacency.items():
             if u not in graph.coordinates: continue
             u_coords = graph.coordinates[u]
@@ -964,15 +1101,19 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                 if e.target not in graph.coordinates: continue
                 v_coords = graph.coordinates[e.target]
                 
-                # Simulate congestion
-                # 60% free flow, 30% moderate, 10% heavy - More visible for demo
-                rand_val = random.random()
+                # Check Router State for this edge
+                penalty = router.dynamic_penalties.get(id(e), 1.0)
+                
                 status = "free"
                 congestion = 0.0
-                if rand_val > 0.90:
+                
+                if penalty >= 1000.0: # Blocked
+                    status = "heavy" # or blocked
+                    congestion = 1.0
+                elif penalty > 2.0:
                     status = "heavy"
                     congestion = 0.8
-                elif rand_val > 0.60: # vastly increased for visibility
+                elif penalty > 1.2:
                     status = "moderate"
                     congestion = 0.4
                 
@@ -988,12 +1129,12 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
                         "geometry": geom_pts
                     })
         
-        print(f"DEBUG: Returning {len(edges_data)} traffic segments.", flush=True)
+        # print(f"DEBUG: Returning {len(edges_data)} traffic segments.", flush=True)
         return {"status": "ok", "edges": edges_data}
 
     @app.post("/graph/load_bbox")
     def load_bbox(req: Dict[str, float]) -> Dict[str, Any]:
-        nonlocal graph, router, loaded_bbox
+        global graph, router, loaded_bbox
         try:
             n = float(req.get("north"))
             s = float(req.get("south"))
@@ -1021,7 +1162,8 @@ def build_app(graph: Graph, eta_estimator: Optional[ETAEstimator] = None) -> Any
             print(f"Failed to load graph: {exc}")
             raise exc
         graph = new_graph
-        router.graph = new_graph
+        # router.graph = new_graph <--- OLD BUGGY WAY
+        router.set_graph(new_graph)
         loaded_bbox = (n, s, e, w)
         return {"status": "ok", "nodes": len(new_graph.coordinates), "bbox": {"north": n, "south": s, "east": e, "west": w}, "source": source}
 
@@ -1064,7 +1206,8 @@ def load_graph_cache(filepath: str = GRAPH_CACHE_FILE) -> Optional[Graph]:
 
 
 
-
+# Expose 'app' object at module level for ASGIs (Render/Uvicorn)
+app = build_app()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Traffic-aware emergency router")
@@ -1104,10 +1247,25 @@ if __name__ == "__main__":
                  graph = joblib.load("graph_cache/graph.pkl")
              except:
                  graph = Graph() # Start empty, load on demand
-        else:
              graph = Graph()
         
-        app = build_app(graph)
+        # app is already built globally, but we might want to re-inject graph if we want?
+        # Actually, global app uses global graph.
+        # So we just update the global graph.
+        # But wait, build_app was called at module level with empty graph.
+        # If we load a graph here (in main), we must update the globals.
+        
+        # Update global graph reference
+        import traffic_router
+        traffic_router.graph = graph
+        # And update router
+        # But router was init with empty graph.
+        # traffic_router.router.set_graph(graph)
+        if traffic_router.router:
+             traffic_router.router.set_graph(graph)
+        
+        # app = build_app(graph) # No longer needed, app is global
+
         try:
             import uvicorn  # type: ignore
         except ImportError as exc:
