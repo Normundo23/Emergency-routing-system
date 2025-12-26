@@ -743,8 +743,8 @@ def build_app() -> Any:
                         if "closure" in inc.get("type", "") or "closed" in inc.get("subtype", "").lower():
                              blocks.add((n, e.target))
                         else:
-                             # Slow down
-                             factor = 0.2 if severity == "High" else 0.5
+                             # Slow down - TUNED: High=40% speed (was 20%), Med=70% speed (was 50%)
+                             factor = 0.4 if severity == "High" else 0.7
                              live_speeds[(n, e.target)] = e.typical_speed_mps * factor
               except Exception:
                    continue
