@@ -284,8 +284,12 @@ def load_graph_from_osm(place: Optional[str] = None, north: float = None, south:
                 speed_kph = 50.0
             elif highway in ["tertiary", "tertiary_link"]:
                 speed_kph = 40.0
+            elif highway in ["residential", "living_street"]:
+                speed_kph = 25.0 # Slower preference
+            elif highway in ["service", "unclassified", "track"]:
+                speed_kph = 15.0 # Penalize shortcuts severely
             else:
-                speed_kph = 30.0 # residential etc
+                speed_kph = 20.0 # unknown/other
 
         # Override with explicit maxspeed if valid
         if maxspeed:
