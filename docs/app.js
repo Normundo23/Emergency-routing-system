@@ -143,6 +143,90 @@ function initMap(key) {
 
     // Interaction
     map.on('click', handleMapClick);
+
+    // Setup Autocomplete
+    setupAutocomplete('origin-input', 'origin-suggestions', setStart);
+    setupAutocomplete('dest-input', 'dest-suggestions', setGoal);
+}
+
+// --- Autocomplete Logic ---
+function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+function setupAutocomplete(inputId, listId, setFunction) {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+
+    const performSearch = async (val) => {
+        if (val.length < 3) {
+            list.style.display = 'none';
+            return;
+        }
+
+        try {
+            const response = await tt.services.fuzzySearch({
+                key: tomtomKey,
+                query: val,
+                center: map ? map.getCenter() : undefined,
+                countrySet: 'PH',
+                limit: 5
+            });
+
+            list.innerHTML = '';
+
+            if (response.results && response.results.length > 0) {
+                list.style.display = 'block';
+                response.results.forEach(result => {
+                    const item = document.createElement('div');
+                    item.className = 'suggestion-item';
+
+                    const name = result.poi ? result.poi.name : result.address.freeformAddress;
+                    const address = result.address.freeformAddress;
+                    // If name is same as address, just show one
+                    const display = (result.poi && name !== address)
+                        ? `<div style="display:flex; flex-direction:column;"><strong>${name}</strong><span style="font-size:0.75em; opacity:0.7">${address}</span></div>`
+                        : `<span>${address}</span>`;
+
+                    item.innerHTML = `<span class="suggestion-icon">📍</span> ${display}`;
+
+                    item.onclick = (e) => {
+                        e.stopPropagation();
+                        const text = result.poi ? name : address;
+                        const coords = [result.position.lng, result.position.lat];
+
+                        // setFunction (setStart/setGoal) normally updates input to coordinates
+                        // We want to keep the friendly name
+                        setFunction(coords);
+                        input.value = text;
+
+                        list.style.display = 'none';
+                    };
+                    list.appendChild(item);
+                });
+            } else {
+                list.style.display = 'none';
+            }
+        } catch (e) {
+            console.error("Autocomplete error", e);
+        }
+    };
+
+    const debouncedSearch = debounce((e) => performSearch(e.target.value), 300);
+
+    input.addEventListener('input', debouncedSearch);
+    input.addEventListener('focus', (e) => { if (e.target.value.length >= 3) performSearch(e.target.value); });
+
+    // Hide on click outside
+    document.addEventListener('click', (e) => {
+        if (e.target !== input && e.target !== list) {
+            list.style.display = 'none';
+        }
+    });
 }
 
 // --- Map Interaction ---
@@ -237,16 +321,61 @@ async function calculateStandardRoute() {
 // --- Hybrid Routing (AI Only Now) ---
 
 document.getElementById('calc-route').onclick = async () => {
-    if (!startMarker || !goalMarker) { setStatus("Pick points first!"); return; }
-
     const btn = document.getElementById('calc-route');
-    btn.disabled = true; btn.innerHTML = "Optimizing...";
-    setStatus("Calculating Cortex AI Route...");
+    const originalText = btn.innerHTML;
 
-    const start = startMarker.getLngLat();
-    const goal = goalMarker.getLngLat();
+    // Helper to get input values
+    const originText = document.getElementById('origin-input').value.trim();
+    const destText = document.getElementById('dest-input').value.trim();
+
+    if (!originText || !destText) {
+        setStatus("Please enter or pick both locations.");
+        return;
+    }
 
     try {
+        btn.disabled = true;
+        btn.innerHTML = "Searching...";
+        setStatus(" resolving locations...");
+
+        // 1. Resolve Origin if needed
+        // If we have a marker AND the text matches the marker coords (roughly), skip.
+        // But easier: if text doesn't look like coords or we just want to be safe, resolve it if it's not empty.
+        // Actually, if user picked point, text is "lat, lon".
+        // Use regex to detect "lat, lon" format to avoid re-geocoding coordinates.
+        const coordRegex = /^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/;
+
+        if (!coordRegex.test(originText)) {
+            setStatus("Finding origin...");
+            const startLoc = await resolveLocation(originText);
+            if (!startLoc) throw new Error(`Location not found: ${originText}`);
+            console.log("Resolved Start:", startLoc);
+            setStart(startLoc); // This updates marker and text field (careful not to loop?)
+            // setStart updates text field to coords. That's fine.
+        }
+
+        // 2. Resolve Destination if needed
+        if (!coordRegex.test(destText)) {
+            setStatus("Finding destination...");
+            const goalLoc = await resolveLocation(destText);
+            if (!goalLoc) throw new Error(`Location not found: ${destText}`);
+            setGoal(goalLoc);
+        }
+
+        // Slight delay to allow UI to update (markers to drop)
+        await new Promise(r => setTimeout(r, 100));
+
+        if (!startMarker || !goalMarker) {
+            throw new Error("Could not set points.");
+        }
+
+        // 3. Proceed with Routing
+        btn.innerHTML = "Optimizing...";
+        setStatus("Calculating Cortex AI Route...");
+
+        const start = startMarker.getLngLat();
+        const goal = goalMarker.getLngLat();
+
         const cortexRes = await fetch(`${API_BASE}/route/coords`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -261,11 +390,31 @@ document.getElementById('calc-route').onclick = async () => {
 
     } catch (e) {
         console.error(e);
-        setStatus("AI Routing failed.");
+        setStatus("Error: " + e.message);
     } finally {
-        btn.disabled = false; btn.innerHTML = '<span>⚡</span> Optimize Route';
+        btn.disabled = false; btn.innerHTML = originalText;
     }
 };
+
+async function resolveLocation(query) {
+    // Basic caching could go here
+    try {
+        const response = await tt.services.fuzzySearch({
+            key: tomtomKey,
+            query: query,
+            center: map.getCenter(),
+            countrySet: 'PH' // Bias to Philippines
+        });
+
+        if (response.results && response.results.length > 0) {
+            const best = response.results[0];
+            return [best.position.lng, best.position.lat];
+        }
+    } catch (e) {
+        console.error("Geocoding failed", e);
+    }
+    return null;
+}
 
 function processRoutingResults(ctxRes) {
     lastRouteData = ctxRes;
@@ -324,7 +473,13 @@ window.switchRouteTab = function (mode) {
         // Show AI Stats
         const eta = Math.ceil(lastRouteData.eta_seconds / 60);
         document.getElementById('eta-val').innerText = `${eta} min`;
-        document.getElementById('dist-val').innerText = `${(lastRouteData.steps.reduce((a, b) => a + (b.distance_m || 0), 0) / 1000).toFixed(2)} km`;
+        document.getElementById('eta-val').innerText = `${eta} min`;
+
+        const distKm = (lastRouteData.steps && Array.isArray(lastRouteData.steps))
+            ? (lastRouteData.steps.reduce((a, b) => a + (b.distance_m || 0), 0) / 1000).toFixed(2)
+            : '0.00';
+
+        document.getElementById('dist-val').innerText = `${distKm} km`;
 
         // Time Saved
         const diff = lastTomTomSummary.travelTimeInSeconds - lastRouteData.eta_seconds;

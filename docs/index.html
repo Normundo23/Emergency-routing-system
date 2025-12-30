@@ -28,10 +28,16 @@
       <!-- Tab Content: Routing -->
       <div id="tab-routing" class="tab-content active">
         <label>ORIGIN</label>
-        <input type="text" id="origin-input" placeholder="14.42271, 121.04513" />
+        <div style="position: relative;">
+          <input type="text" id="origin-input" placeholder="14.42271, 121.04513" autocomplete="off" />
+          <div id="origin-suggestions" class="suggestions-list"></div>
+        </div>
 
         <label>DESTINATION</label>
-        <input type="text" id="dest-input" placeholder="14.40658, 121.03861" />
+        <div style="position: relative;">
+          <input type="text" id="dest-input" placeholder="14.40658, 121.03861" autocomplete="off" />
+          <div id="dest-suggestions" class="suggestions-list"></div>
+        </div>
 
         <div style="display: flex; gap: 8px; margin-top: 16px;">
           <button id="calc-route" class="btn-primary"><span>⚡</span> Optimize Route</button>

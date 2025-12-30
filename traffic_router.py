@@ -791,7 +791,13 @@ def build_app() -> Any:
         if fetcher:
             # Use real data
              try:
-                 bbox = (14.35, 121.00, 14.45, 121.10) 
+                 if graph and len(graph.coordinates) > 0:
+                     n, s, e, w = compute_graph_bounds(graph)
+                     # fetcher expects (min_lat, min_lon, max_lat, max_lon)
+                     # Add small buffer to ensure coverage
+                     bbox = (s - 0.01, w - 0.01, n + 0.01, e + 0.01)
+                 else:
+                     bbox = (14.35, 121.00, 14.45, 121.10) 
                  found = fetcher.fetch_incidents(bbox)
                  if found:
                       active_incidents = found
@@ -839,6 +845,7 @@ def build_app() -> Any:
         live_speeds, blocks = process_incidents_to_penalties(graph, active_incidents)
         router.update_live_feeds(live_speeds, blocks)
         print(f"DEBUG: Traffic state updated ({source_type}). {len(active_incidents)} incidents. {len(blocks)} blocks.", flush=True)
+        return live_speeds, blocks
 
 
 
@@ -924,7 +931,9 @@ def build_app() -> Any:
             # 2. Fetch Live Traffic (Unified)
             # ----------------------------------------------------
             # Ensure global state is fresh
-            update_traffic_state()
+            # Ensure global state is fresh
+            # Capture blocks for verification later
+            live_speeds, blocks = update_traffic_state() or ({}, set())
             
             # Use the GLOBAL router if we are using the GLOBAL graph
             # This ensures we share the penalties we just computed in update_traffic_state
@@ -1120,6 +1129,10 @@ def build_app() -> Any:
         Return all edges with their congestion status.
         Now synced with the ACTUAL router penalties.
         """
+        """
+        Return all edges with their congestion status.
+        Now synced with the ACTUAL router penalties.
+        """
         update_traffic_state() # Ensure fresh
         
         edges_data = []
@@ -1241,6 +1254,8 @@ app = build_app()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Traffic-aware emergency router")
+    if len(sys.argv) == 1:
+        sys.argv.append("serve")
     sub = parser.add_subparsers(dest="command")
 
 
