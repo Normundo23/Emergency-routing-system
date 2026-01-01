@@ -147,6 +147,42 @@ function initMap(key) {
     // Setup Autocomplete
     setupAutocomplete('origin-input', 'origin-suggestions', setStart);
     setupAutocomplete('dest-input', 'dest-suggestions', setGoal);
+
+    // Setup My Location
+    document.getElementById('use-my-location').onclick = () => {
+        const btn = document.getElementById('use-my-location');
+        if (!navigator.geolocation) {
+            setStatus("Geolocation not supported by browser.");
+            return;
+        }
+
+        btn.disabled = true;
+        setStatus("Locating you...");
+
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lng = pos.coords.longitude;
+                const lat = pos.coords.latitude;
+                console.log("Got Location:", lat, lng);
+
+                // Set start point
+                const coords = [lng, lat];
+                setStart(coords);
+                document.getElementById('origin-input').value = "My Location";
+
+                // Fly to user
+                map.flyTo({ center: coords, zoom: 14 });
+                setStatus("Location found.");
+                btn.disabled = false;
+            },
+            (err) => {
+                console.error(err);
+                setStatus("Location access denied or error.");
+                btn.disabled = false;
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+    };
 }
 
 // --- Autocomplete Logic ---

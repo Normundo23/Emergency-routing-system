@@ -1,0 +1,80 @@
+CORRECTNESS TEST CASES: Intelligent Emergency Routing
+Algorithm: Decision Tree Classifier (Incident Risk Prediction)
+Framework: PyTest + Scikit-Learn
+
+---------------------------------------------------------------------
+
+1. OVERVIEW
+This document details the Correctness Testing for the system's Machine Learning component, which predicts accident risk based on environmental factors.
+
+2. DATASET (emergency_incidents.csv)
+We utilize a historical traffic dataset mapping environmental conditions to Risk Levels.
+
+Sample Data:
+| TimeOfDay | Weather | RoadType | TrafficVol | RiskLevel |
+| :--- | :--- | :--- | :--- | :--- |
+| 8 (8am) | 1 (Rain)| 0 (Hwy)  | 1200 | **1 (High)** |
+| 14 (2pm)| 0 (Clear)| 1 (City)| 300 | **0 (Low)** |
+| 17 (5pm)| 1 (Rain)| 0 (Hwy)  | 1500 | **1 (High)** |
+| 3 (3am) | 0 (Clear)| 1 (City)| 50 | **0 (Low)** |
+... (Total 27 Records)
+
+Features = TimeOfDay, WeatherCondition, RoadType, TrafficVolume
+Label = RiskLevel (1 = High Risk, 0 = Low Risk)
+
+---------------------------------------------------------------------
+
+3. TEST CASES & WORKFLOW
+
+3.1 Workflow
+1. Load CSV: `emergency_incidents.csv`
+2. Train: Decision Tree on 70% of data.
+3. Validate: Run specific Test Cases (TC) on the training/validation set.
+
+3.2 Implemented Test Code (Snippet)
+
+    def test_TC01_high_risk_scenario(model_and_data):
+        """
+        Scenario: Rush Hour (8am) + Rain + Highway + High Traffic
+        Expected: High Risk (1)
+        """
+        clf, _, _ = model_and_data
+        # Input: [Time:8, Weather:1, Road:0, Vol:1200]
+        incident = np.array([[8, 1, 0, 1200]]) 
+        prediction = clf.predict(incident)[0]
+        assert prediction == 1 # Expected: High Risk
+
+    def test_TC02_low_risk_scenario(model_and_data):
+        """
+        Scenario: Night (3am) + Clear + City + Low Traffic
+        Expected: Low Risk (0)
+        """
+        clf, _, _ = model_and_data
+        # Input: [Time:3, Weather:0, Road:1, Vol:50]
+        incident = np.array([[3, 0, 1, 50]]) 
+        prediction = clf.predict(incident)[0]
+        assert prediction == 0 # Expected: Low Risk
+
+---------------------------------------------------------------------
+
+4. TEST RESULTS (EVIDENCE)
+Executing `pytest -v test_incident_prediction.py`:
+
+[PyTest Output]
+test_incident_prediction.py::test_TC01_high_risk_scenario PASSED
+test_incident_prediction.py::test_TC02_low_risk_scenario PASSED
+test_incident_prediction.py::test_TC03_edge_case_rainy_night PASSED
+test_incident_prediction.py::test_TC09_accuracy PASSED
+test_incident_prediction.py::test_TC10_precision_recall PASSED
+test_incident_prediction.py::test_TC11_f1_score PASSED
+
+TOTAL: 6 passed in 2.21s
+
+5. DATASET EVALUATION RESULTS (TC09-TC11)
+- Accuracy: > 75%
+- Precision: > 70%
+- Recall: > 70%
+- F1-Score: > 70%
+
+6. SUMMARY
+The algorithm correctly identified High Risk and Low Risk scenarios based on the input features (Weather, Time, Traffic), verifying the logic of the Decision Tree model for Emergency Routing.

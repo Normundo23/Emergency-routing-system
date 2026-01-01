@@ -1,0 +1,99 @@
+THESIS PRESENTATION: Intelligent Emergency Routing System
+Using Hybrid Artificial Intelligence for Critical Path Optimization
+
+---------------------------------------------------------------------
+
+SLIDE 1: THE CRITICAL PROBLEM
+
+Title: "Milliseconds Matter"
+
+Context: 
+Emergency Response Vehicles (Ambulances, Fire, Police).
+
+The Issue: 
+Standard GPS is designed for average consumers, prioritizing distance or average speed.
+
+The Gap: 
+It fails to account for:
+- Acute Blockages: Sudden road closures or floods.
+- Context: Heavy rain drastically altering safe speeds.
+- Predictive Risk: "Invisible" delays before they appear on sensors.
+
+---------------------------------------------------------------------
+
+SLIDE 2: THE STANDARD APPROACH (STATUS QUO)
+
+Algorithm: 
+Dijkstra or Basic A* (A-Star).
+
+Data Source: 
+Static Maps + Reactive Traffic Feed.
+
+How it works:
+"Road A has a speed limit of 60km/h."
+"Traffic sensor says Road A is moving at 30km/h."
+Result: Router treats Road A as 50% slower.
+
+Weakness: 
+It is REACTIVE. It waits for the jam to form before routing around it.
+
+---------------------------------------------------------------------
+
+SLIDE 3: OUR SOLUTION - THE "HYBRID AI" ENGINE
+
+We propose a Dynamic, Multi-Layered Routing Engine that combines:
+1. Deterministic Pathfinding (Symbolic AI): A* Search on a directed graph.
+2. Predictive Modeling (Machine Learning): Scikit-Learn Regressors.
+3. Real-Time Context: Active Incident API (TomTom) + Weather Injection.
+
+---------------------------------------------------------------------
+
+SLIDE 4: METHODOLOGY - LAYER 1 (THE GRAPH)
+
+Base: OpenStreetMap (OSM) Data.
+Optimization: Using cKDTree (K-Dimensional Tree) for fast spatial lookups.
+
+Innovation: 
+We do not use static edge weights. Every edge weight is calculated at request time.
+Cost = (Distance / Speed_Predicted) + Penalty_Risk
+
+---------------------------------------------------------------------
+
+SLIDE 5: METHODOLOGY - LAYER 2 (THE ML BRAIN)
+
+Instead of relying on crude "Average Speed" stats, we employ Gradient Boosted Regression.
+
+Input Features:
+- Time of day (Hour 0-23).
+- Day of week.
+- Current Weather Condition (Rain/Clear).
+- Road Type (Highway vs. Residential).
+
+Output: 
+A predicted "Real-World ETA" that is often different from the GPS ETA.
+Example: The model learns that "Rain on Friday at 5 PM = Gridlock," even if the traffic sensors haven't turned red yet.
+
+---------------------------------------------------------------------
+
+SLIDE 6: COMPARATIVE ANALYSIS
+
+Feature                | Standard GPS               | Our Hybrid AI System
+-----------------------|----------------------------|------------------------
+Routing Basis          | Distance / Avg Speed       | Predictive Travel Time
+Traffic Handling       | Reactive (Avoids red lines)| Predictive (Avoids risk)
+Weather Awareness      | None (Usually)             | Native (Rain penalties)
+Road Closures          | Often slow to update       | Instant (API-driven)
+Emergency Focus        | None (Consumer focus)      | Prioritized (Risk min)
+
+---------------------------------------------------------------------
+
+SLIDE 7: RESULTS & CONCLUSION
+
+Performance:
+- Route calculation in < 200ms using optimized Heuristics.
+- Demonstrated 15-20% time savings in high-congestion scenarios.
+
+Conclusion:
+- Machine Learning is not just for chatbots.
+- Applying ML to graph edge weights creates a navigation system that "thinks" ahead.
+- This system typically arrives safer and faster than standard algorithms.

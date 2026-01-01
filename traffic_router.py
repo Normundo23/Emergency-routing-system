@@ -870,6 +870,8 @@ def build_app() -> Any:
     def route_by_coords(req: RouteCoordsRequest) -> Dict[str, Any]:
         try:
             global graph, router
+            live_speeds = {}
+            blocks = set()
             print(f"--- Route Request: {req.start_lat},{req.start_lon} -> {req.goal_lat},{req.goal_lon}", flush=True)
             if graph is None: print("ERROR: graph is None", flush=True)
             else: print(f"DEBUG: graph nodes: {len(graph.adjacency)}", flush=True)
