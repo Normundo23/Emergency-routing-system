@@ -1,0 +1,56 @@
+ROUTING ALGORITHM TEST CASES - WORD TABLE FORMAT
+
+Instructions: 
+1. Select all the table content below (from "Test #" to the last row)
+2. Copy it (Ctrl+C)
+3. In Microsoft Word, paste it (Ctrl+V)
+4. Word will automatically detect the tabs and create a table
+5. Optional: Select the table, go to Table Design, and apply your preferred style
+
+=====================================================================
+
+Test #	Test Name	Scenario Description	Key Conditions	Expected Result	Status
+TC01	Shortest Path Horizontal	Route A→C via horizontal path	Clear weather, normal speed	Path: A→B→C	PASSED ✓
+TC02	Shortest Path Vertical	Route A→G via direct vertical	Clear weather, normal speed	Path: A→D→G, ETA: ~19.05s	PASSED ✓
+TC03	Diagonal Optimal Route	Route A→I (top-left to bottom-right)	Multi-segment path	Min 5 nodes traversed	PASSED ✓
+TC04	Detour Due to Congestion	Heavy traffic forces detour	A→B blocked (5x penalty)	Alternative path to C found	PASSED ✓
+TC05	Multiple Congested Segments	Multiple simultaneous congestion points	A→B & D→E blocked (4x penalty each)	Navigates around all blockages	PASSED ✓
+TC06	Moderate Traffic Adjustment	Moderate congestion on B→E	2x penalty on B→E	May still use if optimal	PASSED ✓
+TC07	Same Start/Destination	Route from E→E	Trivial case	ETA: 0s, Path: [E]	PASSED ✓
+TC08	Disconnected Nodes	Route to unreachable node J	No path exists	ValueError exception	PASSED ✓
+TC09	Reverse Route Symmetry	Compare A→D vs D→A	Bidirectional edges	Similar ETAs (±20% tolerance)	PASSED ✓
+TC10	Rush Hour Routing	Morning rush hour routing	Time: 8am, Clear	Time-aware routing	PASSED ✓
+TC11	Rainy Weather Routing	Route during rainy conditions	Time: 2pm, Rain	Weather-aware routing	PASSED ✓
+TC12	Night Time Routing	Late night minimal traffic	Time: 3am, Clear	Fastest theoretical path	PASSED ✓
+TC13	Maximum Penalties Scenario	Extreme congestion stress test	10x penalties on multiple routes	Valid path still found	PASSED ✓
+TC14	ETA Calculation Precision	Verify mathematical accuracy	G→H: 100m / 20m/s	ETA: 5.0s (±0.1s)	PASSED ✓
+TC15	Alternative Path Comparison	Block primary route, force alternate	A→B & B→C blocked (15x penalty)	Different path or longer ETA	PASSED ✓
+TC16	Cascading Traffic Impact	Sequential congestion chain reaction	B→E (3x), E→H (2.5x)	Adapts to cascading delays	PASSED ✓
+TC17	Highway Preference	Choose highway vs city road	Speed vs distance optimization	Prefers highway (G→H→I)	PASSED ✓
+TC18	Mixed Conditions Routing	Rain + Rush Hour + High Traffic	Time: 8am, Rain, Traffic: 1200, B→E 2.5x	Multi-factor optimization	PASSED ✓
+TC19	Incremental Penalty Effect	Test routing at different penalty thresholds	1.5x → 5.0x on A→B	Route/ETA changes seen	PASSED ✓
+TC20	Comprehensive Stress Test	Complex multi-route scenario	4 penalties, Rush+Rain, Traffic: 1500	All 4 routes complete	PASSED ✓
+
+=====================================================================
+
+SUMMARY STATISTICS
+
+Metric	Value
+Total Tests	20
+Tests Passed	20 (100%)
+Tests Failed	0 (0%)
+Execution Time	3.77 seconds
+Test Categories	Standard (3), Traffic (3), Edge Cases (3), Context-Aware (3), Performance (3), Advanced (5)
+
+=====================================================================
+
+TEST CATEGORY BREAKDOWN
+
+Category	Number of Tests	Percentage
+Standard Routing	3	15%
+Traffic Scenarios	3	15%
+Edge Cases	3	15%
+Context-Aware Routing	3	15%
+Performance & Robustness	3	15%
+Advanced Scenarios	5	25%
+TOTAL	20	100%

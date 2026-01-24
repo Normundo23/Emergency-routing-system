@@ -30,8 +30,7 @@ The model doesn't just look at the map; it looks at:
 - Current Weather Conditions.
 - Road Classifications.
 
-It identifies patterns such as: 'Heavy Rain + Friday Afternoon + Highway = High Risk Area.' Because the model can predict this risk, the A* algorithm can detour an ambulance *before* it gets stuck in a developing jam. This is the difference between being reactive and being proactive."
-
+It identifies patterns such as: 'Heavy Ra`12`
 ---------------------------------------------------------------------
 
 [PART 4: EVALUATION & RESULTS - How do we know it works?]

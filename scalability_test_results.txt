@@ -1,0 +1,46 @@
+SCALABILITY TEST RESULTS
+================================================================================
+
+Graph Size      Nodes    Edges        Avg Time/Route     Growth Rate
+--------------------------------------------------------------------------------
+Small           9        13           0.0000s           Baseline
+Medium          50       75           0.0001s           6.0×
+Large           200      300          0.0004s           27.5×
+Extra Large     1000     1500         0.0028s           175.3×
+
+
+DETAILED STATISTICS
+================================================================================
+
+Small Graph:
+  Nodes: 9
+  Edges: 13 (undirected)
+  Average time: 0.000016 seconds
+  Std deviation: 0.000010 seconds
+  Min time: 0.000005 seconds
+  Max time: 0.000053 seconds
+
+Medium Graph:
+  Nodes: 50
+  Edges: 75 (undirected)
+  Average time: 0.000095 seconds
+  Std deviation: 0.000056 seconds
+  Min time: 0.000009 seconds
+  Max time: 0.000201 seconds
+
+Large Graph:
+  Nodes: 200
+  Edges: 300 (undirected)
+  Average time: 0.000434 seconds
+  Std deviation: 0.000318 seconds
+  Min time: 0.000017 seconds
+  Max time: 0.001179 seconds
+
+Extra Large Graph:
+  Nodes: 1000
+  Edges: 1500 (undirected)
+  Average time: 0.002768 seconds
+  Std deviation: 0.001691 seconds
+  Min time: 0.000123 seconds
+  Max time: 0.006026 seconds
+

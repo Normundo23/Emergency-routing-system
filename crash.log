@@ -1,0 +1,5 @@
+Crash detected: [Errno 22] Invalid argument
+Traceback (most recent call last):
+  File "C:\Users\denni\OneDrive\Desktop\Emergency routing system\traffic_router.py", line 875, in route_by_coords
+    print(f"--- Route Request: {req.start_lat},{req.start_lon} -> {req.goal_lat},{req.goal_lon}", flush=True)
+OSError: [Errno 22] Invalid argument
